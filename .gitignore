@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Generated reports (contain real names / event data — never commit)
+mentor-reports/
+reports/
+*.slack.md
+*.gmail.html
+mentor-slots-*.txt
+mentor-slots-*.json
+
+# Local sessions / secrets (these normally live in ~, but never let them in here)
+*-auth.json
+.slack-cf-*.json
+.union-vc-*.json
+.claude.json
+.claude.json.cf-bak
+.env
+.env.*
+
+# Logs / OS cruft
+*.log
+.DS_Store
+.npm-mcp-cache/

@@ -1,0 +1,10 @@
+{
+  "name": "slack-cf-cli",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Capital Factory Slack CLI (auth once, send DMs) via a saved Playwright session.",
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
