@@ -12,6 +12,7 @@ wires your machine up to:
 | **Mentor matching** | Given a CF company, get a tiered list of mentor matches from this week's open office-hours **plus** off-hours intro-request candidates drawn from your master mentor CSV, then DM it to your coordinator | Claude Code skill (`cf-mentor-match`) |
 | **Pitch Roulette** | 5 random Pitch companies with a compact mentor pick for each — serendipitous discovery | Claude Code skill (`cf-pitch-roulette`) |
 | **Augmentation** | Public-LinkedIn + website + WebSearch research, cached locally; auto-invoked when a profile is thin | Claude Code skill (`cf-augment`) |
+| **Knowledge base** | Persistent local store of canonical CF entity files (one per company / mentor) in a directory of your choice — your notes survive refreshes | Claude Code skill (`cf-knowledge`) |
 
 Everything runs **locally** using sessions you sign into once — no Slack app install, no bot tokens,
 and **no passwords are ever written to disk** (only the resulting session cookies, which stay on your
@@ -61,12 +62,17 @@ cf uninstall-daily        # remove that schedule
 cf mentors show           # what mentor CSV is configured + active count
 cf mentors set <path>     # point at your master mentor CSV
 cf mentors search --tags Defense,Hardware --not-hosting-this-week --limit 6
+
+cf knowledge show         # local knowledge dir + entry counts
+cf knowledge set <path>   # point at any directory (Obsidian vault, iCloud folder, ~/cf-knowledge…)
+cf knowledge list --tag Defense
 ```
 
 Natural-language calls from Claude:
 - *"match mentors to TrailSense and push to my coordinator"* → `cf-mentor-match`
 - *"pitch roulette — 5 random"* → `cf-pitch-roulette`
 - *"research Dave Morris"* → `cf-augment`
+- *"what do we know about Acme"* / *"list our companies"* → `cf-knowledge`
 
 The **daily report runs without Claude** — `cf install-daily` registers a macOS launchd job that
 runs [`scripts/daily_report.sh`](scripts/daily_report.sh) → `cf daily` → generate + push to Slack.

@@ -9,6 +9,7 @@
 //   cf calendar [...]      Pull the union.vc calendar as JSON (passes args to union_calendar.mjs).
 //   cf slack <t> <msg...>  Send a Slack DM (passes args to slack.mjs dm; add --dry-run to preview).
 //   cf mentors <sub>      Master mentor CSV: `show`, `set <path>`, or `search [flags]`.
+//   cf knowledge <sub>    Local knowledge store: `show`, `set <path>`, `list [flags]`, `path <slug>`.
 //   cf install-daily [HH:MM]   Install a launchd job that runs `cf daily` every day (default 07:00).
 //   cf uninstall-daily    Remove that launchd job.
 //   cf help               Show this help.
@@ -42,7 +43,7 @@ const CF_CONFIG = path.join(CF_HOME, 'config.json');
 const CLAUDE_JSON = path.join(HOME, '.claude.json');
 const NPM_MCP_CACHE = path.join(HOME, '.npm-mcp-cache');
 
-const SKILLS = ['union-calendar', 'slack-dm', 'slack-auth', 'cf-mentor-match', 'cf-augment', 'cf-pitch-roulette'];
+const SKILLS = ['union-calendar', 'slack-dm', 'slack-auth', 'cf-mentor-match', 'cf-augment', 'cf-pitch-roulette', 'cf-knowledge'];
 const PITCH_PKG = '@capitalthought/pitch-mcp-server';
 
 // ---------- tiny output helpers ----------
@@ -517,6 +518,123 @@ async function setupMentors() {
   ok(`Saved (${rows.length} rows).`);
 }
 
+// ---------- knowledge store ----------
+function slugify(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+// Minimal frontmatter parser: extracts the YAML-ish block between leading `---` lines.
+// Handles only the keys we generate (flat scalars, `tags: [a, b]` arrays, and a small
+// `sources:` nested block). Anything else is returned as a raw string.
+function parseFrontmatter(text) {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  if (!m) return {};
+  const out = {}; let nested = null;
+  for (const raw of m[1].split(/\r?\n/)) {
+    if (!raw.trim()) { nested = null; continue; }
+    if (/^[A-Za-z_][A-Za-z0-9_]*:\s*$/.test(raw)) { // "sources:" opening a block
+      nested = raw.split(':')[0].trim(); out[nested] = {}; continue;
+    }
+    if (nested && /^\s+\S/.test(raw)) {
+      const [k, ...rest] = raw.trim().split(':'); out[nested][k.trim()] = rest.join(':').trim();
+      continue;
+    }
+    nested = null;
+    const idx = raw.indexOf(':'); if (idx < 0) continue;
+    const k = raw.slice(0, idx).trim(); let v = raw.slice(idx + 1).trim();
+    if (/^\[.*\]$/.test(v)) v = v.slice(1, -1).split(',').map((x) => x.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+    else v = v.replace(/^["']|["']$/g, '');
+    out[k] = v;
+  }
+  return out;
+}
+function knowledgeDir() { return readCfg().knowledgeDir || null; }
+function knowledgeShow() {
+  const dir = knowledgeDir();
+  if (!dir) { warn('No knowledge directory set. Run: cf knowledge set <path>'); return; }
+  const exists = fs.existsSync(dir);
+  console.log(`Path:   ${dir}  (${exists ? 'exists' : 'MISSING — will be created on first write'})`);
+  if (!exists) return;
+  let co = 0, me = 0;
+  try { co = fs.readdirSync(path.join(dir, 'companies')).filter((f) => f.endsWith('.md')).length; } catch {}
+  try { me = fs.readdirSync(path.join(dir, 'mentors')).filter((f) => f.endsWith('.md')).length; } catch {}
+  console.log(`Counts: ${co} companies · ${me} mentors`);
+}
+function knowledgeSet(p) {
+  if (!p) { bad('Usage: cf knowledge set <path>'); process.exit(2); }
+  const abs = path.resolve(p.replace(/^~/, HOME));
+  fs.mkdirSync(path.join(abs, 'companies'), { recursive: true });
+  fs.mkdirSync(path.join(abs, 'mentors'), { recursive: true });
+  const cfg = readCfg(); cfg.knowledgeDir = abs; writeCfg(cfg);
+  ok(`Knowledge directory: ${abs}`);
+  knowledgeShow();
+}
+function knowledgePath(args) {
+  const slug = args.find((a) => !a.startsWith('--'));
+  const tIdx = args.indexOf('--type'); const type = tIdx >= 0 ? args[tIdx + 1] : null;
+  if (!slug) { bad('Usage: cf knowledge path <slug-or-name> --type co|mentor'); process.exit(2); }
+  const dir = knowledgeDir(); if (!dir) { bad('Knowledge dir not set'); process.exit(1); }
+  const folder = type === 'mentor' ? 'mentors' : 'companies';
+  console.log(path.join(dir, folder, slugify(slug) + '.md'));
+}
+function knowledgeList(args) {
+  const dir = knowledgeDir(); if (!dir) { bad('Knowledge dir not set'); process.exit(1); }
+  let type = null, tag = null, staleDays = null, asJson = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--type') type = (args[++i] || '').toLowerCase();
+    else if (a === '--tag') tag = (args[++i] || '').toLowerCase();
+    else if (a === '--stale') staleDays = parseInt(args[++i], 10);
+    else if (a === '--json') asJson = true;
+  }
+  const buckets = [];
+  if (!type || type.startsWith('co')) buckets.push({ folder: 'companies', kind: 'company' });
+  if (!type || type.startsWith('me')) buckets.push({ folder: 'mentors', kind: 'mentor' });
+  const now = Date.now();
+  const rows = [];
+  for (const b of buckets) {
+    const sub = path.join(dir, b.folder);
+    if (!fs.existsSync(sub)) continue;
+    for (const f of fs.readdirSync(sub).filter((x) => x.endsWith('.md'))) {
+      const p = path.join(sub, f);
+      let fm = {};
+      try { fm = parseFrontmatter(fs.readFileSync(p, 'utf8')); } catch {}
+      const tags = Array.isArray(fm.tags) ? fm.tags : (typeof fm.tags === 'string' ? [fm.tags] : []);
+      if (tag && !tags.some((t) => String(t).toLowerCase().includes(tag))) continue;
+      if (staleDays != null) {
+        const ts = Date.parse(fm.refreshedAt || ''); if (!isFinite(ts) || (now - ts) < staleDays * 86400000) continue;
+      }
+      rows.push({ type: b.kind, slug: f.replace(/\.md$/, ''), name: fm.name || '', refreshedAt: fm.refreshedAt || '', tags, path: p });
+    }
+  }
+  rows.sort((a, b) => (a.type === b.type ? a.slug.localeCompare(b.slug) : a.type.localeCompare(b.type)));
+  if (asJson) { process.stdout.write(JSON.stringify(rows, null, 2) + '\n'); return; }
+  if (!rows.length) { console.log('(no entries)'); return; }
+  for (const r of rows) {
+    const tagStr = (r.tags || []).slice(0, 4).join(', ');
+    console.log(`${r.type.padEnd(7)}  ${r.slug.padEnd(28)}  ${r.refreshedAt.slice(0, 10).padEnd(10)}  ${r.name}${tagStr ? '  · ' + tagStr : ''}`);
+  }
+  console.log(`\n${rows.length} entries`);
+}
+async function setupKnowledge() {
+  step('Local knowledge directory');
+  const cfg = readCfg();
+  if (cfg.knowledgeDir && fs.existsSync(cfg.knowledgeDir)) {
+    ok(`Configured → ${cfg.knowledgeDir}`); return;
+  }
+  console.log('Where should the local CF knowledge base live? Examples:');
+  console.log(C.dim('  ~/cf-knowledge                  (simple)'));
+  console.log(C.dim('  ~/Obsidian/CF                   (inside an Obsidian vault)'));
+  console.log(C.dim('  ~/Library/Mobile Documents/.../CF  (iCloud-synced)'));
+  console.log(C.dim('  Leave blank to skip — set later with `cf knowledge set <path>`.'));
+  const p = (await prompt('Knowledge dir: ')).trim();
+  if (!p) { warn('Skipped — cf-knowledge skill will be inert until you run `cf knowledge set <path>`.'); return; }
+  const abs = path.resolve(p.replace(/^~/, HOME));
+  fs.mkdirSync(path.join(abs, 'companies'), { recursive: true });
+  fs.mkdirSync(path.join(abs, 'mentors'), { recursive: true });
+  cfg.knowledgeDir = abs; writeCfg(cfg);
+  ok(`Saved: ${abs}`);
+}
+
 // ---------- launchd daily ----------
 const PLIST_LABEL = 'com.cfhelpers.daily';
 const PLIST_PATH = path.join(HOME, 'Library', 'LaunchAgents', PLIST_LABEL + '.plist');
@@ -573,6 +691,7 @@ async function connect(force) {
   await slackAuth();
   await pitchAuth();
   await setupMentors();
+  await setupKnowledge();
   await linkCf();
   console.log(C.b('\n── Final check ──'));
   await doctor();
@@ -596,6 +715,12 @@ function help() {
                               ${C.b('set')} <path>       — point at a CSV
                               ${C.b('search')} [flags]   — score+filter (--tags X,Y --keywords k1,k2
                                                   --not-hosting-this-week --limit N --json)
+  ${C.b('cf knowledge')} <sub>        Local CF knowledge base:
+                              ${C.b('show')}             — configured dir + counts
+                              ${C.b('set')} <path>       — point at a directory
+                              ${C.b('list')} [flags]     — list entries (--type co|mentor
+                                                  --tag X --stale N --json)
+                              ${C.b('path')} <slug> --type co|mentor  — resolve entity file path
   ${C.b('cf install-daily')} [HH:MM]  Schedule \`cf daily\` via launchd (default 07:00, Mac).
   ${C.b('cf uninstall-daily')}      Remove the scheduled daily job.
   ${C.b('cf help')}                 This help.
@@ -623,6 +748,15 @@ try {
       else if (sub === 'set') mentorsSet(rest[1]);
       else if (sub === 'show' || !sub) mentorsShow();
       else { bad(`Unknown mentors subcommand: ${sub}`); process.exit(2); }
+      break;
+    }
+    case 'knowledge': {
+      const sub = rest[0];
+      if (sub === 'set') knowledgeSet(rest[1]);
+      else if (sub === 'list') knowledgeList(rest.slice(1));
+      else if (sub === 'path') knowledgePath(rest.slice(1));
+      else if (sub === 'show' || !sub) knowledgeShow();
+      else { bad(`Unknown knowledge subcommand: ${sub}`); process.exit(2); }
       break;
     }
     case 'install-daily': installDaily(rest.find((a) => /^\d/.test(a))); break;

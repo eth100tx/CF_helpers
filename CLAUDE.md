@@ -60,4 +60,10 @@ remind the user to **restart Claude Code** so the Pitch MCP tools load.
 - **"research <name>"** → **`cf-augment`** does public-LinkedIn + website + WebSearch and
   caches the brief at `~/.cf-helpers/augmentation/<slug>.md`. Auto-invoked by the other
   skills whenever a Pitch profile or mentor record is thin.
+- **"what do we know about <X>"** / *"list our companies"* / *"look up <X>"* →
+  **`cf-knowledge`** maintains the persistent local store of canonical entity files in a
+  directory of the user's choice (`cf knowledge set <path>`; `knowledgeDir` in config).
+  Reads the local file when present and fresh; otherwise pulls Pitch + cf-augment and
+  writes/updates the file — **preserving the user's `## Notes` section verbatim** across
+  refreshes. On-demand only; never bulk-syncs.
 - Pitch work happens through the `mcp__pitch__*` tools once the server is loaded.
