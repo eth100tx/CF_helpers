@@ -49,4 +49,9 @@ remind the user to **restart Claude Code** so the Pitch MCP tools load.
 - "build the mentor report" → `cf report`
 - "push the mentor report to Slack" → `cf daily` (or `cf slack me --file …` after a dry-run)
 - "schedule the daily report at 7am" → `cf install-daily 07:00`
+- **"match mentors to <CF company>"** → the **`cf-mentor-match`** skill triggers automatically;
+  it reads the company from Pitch (researching the web if the Pitch profile is thin), scores
+  it against this week's open office-hours, and (on request) DMs the tiered picks to the
+  user's CF mentor coordinator on Slack (conventional nickname `eli`; each user maps it to
+  their own coordinator's DM via the slack-dm skill). Dry-run first, always.
 - Pitch work happens through the `mcp__pitch__*` tools once the server is loaded.

@@ -40,7 +40,7 @@ const CF_CONFIG = path.join(CF_HOME, 'config.json');
 const CLAUDE_JSON = path.join(HOME, '.claude.json');
 const NPM_MCP_CACHE = path.join(HOME, '.npm-mcp-cache');
 
-const SKILLS = ['union-calendar', 'slack-dm', 'slack-auth'];
+const SKILLS = ['union-calendar', 'slack-dm', 'slack-auth', 'cf-mentor-match'];
 const PITCH_PKG = '@capitalthought/pitch-mcp-server';
 
 // ---------- tiny output helpers ----------

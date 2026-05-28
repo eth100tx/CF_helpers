@@ -9,6 +9,7 @@ wires your machine up to:
 | **Capital Factory Slack** | Send DMs / channel posts; push the mentor report | CLI (saved browser session) |
 | **Pitch.vc** | Search companies, manage pipeline, people, tags, reviews… | Claude Code via the Pitch **MCP server** |
 | **Gmail** | Paste-ready HTML version of the report | Assumed already integrated (your normal Gmail) |
+| **Mentor matching** | Given a CF company, get a tiered list of mentor matches from this week's open office-hours, then DM it to Eli | Claude Code skill (`cf-mentor-match`) |
 
 Everything runs **locally** using sessions you sign into once — no Slack app install, no bot tokens,
 and **no passwords are ever written to disk** (only the resulting session cookies, which stay on your
