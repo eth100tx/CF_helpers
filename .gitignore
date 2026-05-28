@@ -26,6 +26,9 @@ mentor-slots-*.json
 augmentation/
 Mentors-*.*
 
+# Personal session-handoff notes (per-user; never committed)
+next_session.md
+
 # Logs / OS cruft
 *.log
 .DS_Store
