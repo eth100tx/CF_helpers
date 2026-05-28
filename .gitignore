@@ -19,6 +19,13 @@ mentor-slots-*.json
 .env
 .env.*
 
+# Mentor / company CSVs are local per-user data (contain PII) — never commit
+*.csv
+*.tsv
+*.xlsx
+augmentation/
+Mentors-*.*
+
 # Logs / OS cruft
 *.log
 .DS_Store

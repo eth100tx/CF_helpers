@@ -8,6 +8,7 @@
 //   cf daily              Generate the report AND push it to your daily Slack target (no Claude).
 //   cf calendar [...]      Pull the union.vc calendar as JSON (passes args to union_calendar.mjs).
 //   cf slack <t> <msg...>  Send a Slack DM (passes args to slack.mjs dm; add --dry-run to preview).
+//   cf mentors <sub>      Master mentor CSV: `show`, `set <path>`, or `search [flags]`.
 //   cf install-daily [HH:MM]   Install a launchd job that runs `cf daily` every day (default 07:00).
 //   cf uninstall-daily    Remove that launchd job.
 //   cf help               Show this help.
@@ -36,11 +37,12 @@ const SLACK = path.join(SLACK_SCRIPTS, 'slack.mjs');
 
 const CF_HOME = path.join(HOME, '.cf-helpers');
 const REPORT_DIR = path.join(CF_HOME, 'reports');
+const AUGMENT_DIR = path.join(CF_HOME, 'augmentation');
 const CF_CONFIG = path.join(CF_HOME, 'config.json');
 const CLAUDE_JSON = path.join(HOME, '.claude.json');
 const NPM_MCP_CACHE = path.join(HOME, '.npm-mcp-cache');
 
-const SKILLS = ['union-calendar', 'slack-dm', 'slack-auth', 'cf-mentor-match'];
+const SKILLS = ['union-calendar', 'slack-dm', 'slack-auth', 'cf-mentor-match', 'cf-augment', 'cf-pitch-roulette'];
 const PITCH_PKG = '@capitalthought/pitch-mcp-server';
 
 // ---------- tiny output helpers ----------
@@ -330,6 +332,191 @@ async function cmdDaily() {
   ok(`Daily report pushed to "${target}" (${s.openSessions} sessions, ${s.openSlots} slots).`);
 }
 
+// ---------- mentors CSV (master list) ----------
+// Minimal RFC-4180-ish CSV parser: handles BOM, quoted fields, embedded commas + newlines,
+// and "" inside quoted strings. Pure Node, no deps.
+function parseCsv(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // strip BOM (the CF export has one)
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += c;
+    } else {
+      if (c === '"') inQ = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\r') { /* skip */ }
+      else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else field += c;
+    }
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+function csvToObjects(text) {
+  const rows = parseCsv(text);
+  if (!rows.length) return [];
+  const headers = rows[0].map((h) => h.trim());
+  const out = [];
+  for (const r of rows.slice(1)) {
+    if (r.every((x) => x === '')) continue;
+    const o = {};
+    for (let i = 0; i < headers.length; i++) o[headers[i]] = (r[i] || '').trim();
+    out.push(o);
+  }
+  return out;
+}
+function loadMentors() {
+  const cfg = readCfg();
+  if (!cfg.mentorsCsv) return null;
+  if (!fs.existsSync(cfg.mentorsCsv)) return null;
+  return csvToObjects(fs.readFileSync(cfg.mentorsCsv, 'utf8'));
+}
+function thisWeeksHosts() {
+  try {
+    const files = fs.readdirSync(REPORT_DIR)
+      .filter((f) => /^mentor-slots-\d{4}-\d{2}-\d{2}\.json$/.test(f))
+      .sort().reverse();
+    if (!files.length) return new Set();
+    const j = JSON.parse(fs.readFileSync(path.join(REPORT_DIR, files[0]), 'utf8'));
+    const hosts = (j.sessions || []).map((s) => (s.host || '').toLowerCase().trim()).filter(Boolean);
+    return new Set(hosts);
+  } catch { return new Set(); }
+}
+function isActive(m) {
+  return /active/i.test(m['Status'] || '') &&
+         /checked|yes|true|1|y/i.test(m['Active in Union'] || '');
+}
+// Whitelist the fields that leave this function — explicitly excludes Email, demographics,
+// and other PII columns. Callers (incl. Claude) get only match-relevant fields.
+function publicMentor(m, extra) {
+  return Object.assign({
+    name: m['Name'],
+    first_name: m['First Name'],
+    title: m['Title'],
+    current_company: m['Current Company'],
+    city: m['City'],
+    industry: m['Industry'],
+    specialties: m['Specialties'],
+    technologies: m['Technologies'],
+    stage: m['Stage'],
+    product_type: m['Product Type'],
+    product_stage: m['ProductStage'],
+    preferred_customer: m['Preferred Customer Segment(s)'],
+    mentor_bio: (m['Mentor Bio'] || '').slice(0, 320),
+    session_description: (m['Session Description'] || '').slice(0, 320),
+    union_link: m['Union Link'],
+    linkedin: m['LinkedIn'],
+    website: m['Website'],
+    investor: m['Investor?'],
+    investor_type: m['Investor Type'],
+  }, extra || {});
+}
+
+function mentorsShow() {
+  const cfg = readCfg();
+  if (!cfg.mentorsCsv) { warn('No mentors CSV configured. Run `cf connect` or `cf mentors set <path>`.'); return; }
+  const exists = fs.existsSync(cfg.mentorsCsv);
+  console.log(`Path:   ${cfg.mentorsCsv}  (${exists ? 'exists' : 'MISSING'})`);
+  if (!exists) return;
+  const rows = csvToObjects(fs.readFileSync(cfg.mentorsCsv, 'utf8'));
+  const active = rows.filter(isActive);
+  console.log(`Total:  ${rows.length} rows · Active-in-Union: ${active.length}`);
+  console.log(`Schema: ${Object.keys(rows[0] || {}).length} columns`);
+}
+function mentorsSet(p) {
+  if (!p) { bad('Usage: cf mentors set <path-to-csv>'); process.exit(2); }
+  const abs = path.resolve(p);
+  if (!fs.existsSync(abs)) { bad(`File not found: ${abs}`); process.exit(1); }
+  const cfg = readCfg(); cfg.mentorsCsv = abs; writeCfg(cfg);
+  ok(`Mentors CSV path saved: ${abs}`);
+  mentorsShow();
+}
+function mentorsSearch(args) {
+  const mentors = loadMentors();
+  if (!mentors) { bad('No mentors CSV configured. Run `cf connect` or `cf mentors set <path>`.'); process.exit(1); }
+  let tags = [], kws = [], limit = 8, excludeHosting = false, asJson = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--tags') tags = (args[++i] || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    else if (a === '--keywords') kws = (args[++i] || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    else if (a === '--limit') limit = parseInt(args[++i], 10) || 8;
+    else if (a === '--not-hosting-this-week') excludeHosting = true;
+    else if (a === '--json') asJson = true;
+  }
+  const hosts = excludeHosting ? thisWeeksHosts() : new Set();
+  const scored = [];
+  for (const m of mentors) {
+    if (!isActive(m)) continue;
+    if (hosts.has((m['Name'] || '').toLowerCase().trim())) continue;
+    const f = {
+      industry: (m['Industry'] || '').toLowerCase(),
+      specialties: (m['Specialties'] || '').toLowerCase(),
+      technologies: (m['Technologies'] || '').toLowerCase(),
+      disliked: (m['DislikedTech'] || '').toLowerCase(),
+      bio: (m['Mentor Bio'] || '').toLowerCase(),
+      session: (m['Session Description'] || '').toLowerCase(),
+      title: (m['Title'] || '').toLowerCase(),
+      company: (m['Current Company'] || '').toLowerCase(),
+      preferred: (m['Preferred Customer Segment(s)'] || '').toLowerCase(),
+    };
+    let score = 0;
+    const why = [];
+    for (const t of tags) {
+      let hit = false;
+      if (f.specialties.includes(t)) { score += 3; why.push(`spec:${t}`); hit = true; }
+      if (f.technologies.includes(t)) { score += 3; why.push(`tech:${t}`); hit = true; }
+      if (f.industry.includes(t))    { score += 2; why.push(`ind:${t}`);  hit = true; }
+      if (!hit && f.bio.includes(t)) { score += 1; why.push(`bio:${t}`); }
+      if (f.disliked.includes(t))    { score -= 3; why.push(`disliked:${t}`); }
+    }
+    for (const k of kws) {
+      if (f.bio.includes(k))      { score += 2; why.push(`bio:${k}`); }
+      if (f.session.includes(k))  { score += 2; why.push(`session:${k}`); }
+      if (f.title.includes(k))    { score += 1; why.push(`title:${k}`); }
+      if (f.company.includes(k))  { score += 1; why.push(`co:${k}`); }
+      if (f.preferred.includes(k)){ score += 1; why.push(`pref:${k}`); }
+    }
+    if (score <= 0) continue;
+    scored.push(publicMentor(m, { score, match_reasons: why.slice(0, 8) }));
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const top = scored.slice(0, limit);
+  if (asJson) { process.stdout.write(JSON.stringify(top, null, 2) + '\n'); return; }
+  for (const m of top) {
+    console.log(`${String(m.score).padStart(3)}  ${m.name} — ${m.title || '(no title)'} @ ${m.current_company || '—'}  (${m.city || '—'})`);
+    console.log(`     ${(m.match_reasons || []).join(', ')}`);
+  }
+  if (!top.length) console.log('(no matches)');
+}
+async function setupMentors() {
+  step('Master mentor list (CSV)');
+  const cfg = readCfg();
+  if (cfg.mentorsCsv && fs.existsSync(cfg.mentorsCsv)) {
+    try { const rows = csvToObjects(fs.readFileSync(cfg.mentorsCsv, 'utf8'));
+      ok(`Configured (${rows.length} rows) → ${cfg.mentorsCsv}`); return;
+    } catch { /* fall through and re-prompt */ }
+  }
+  console.log('Used by cf-mentor-match for the "Off-hours mentor ideas" section, and by');
+  console.log('cf-pitch-roulette for per-company suggestions.');
+  console.log(C.y('  Privacy note:') + ' this CSV typically has PII columns (emails, demographics).');
+  console.log(C.dim('  The skills read only match-relevant fields; nothing from this file is ever'));
+  console.log(C.dim('  committed to a repo or sent to Slack/Pitch.'));
+  const p = (await prompt('Path to your CF master mentor CSV (or blank to skip): ')).trim();
+  if (!p) { warn('Skipped — off-hours suggestions will be unavailable until you set this.'); return; }
+  const abs = path.resolve(p.replace(/^~/, HOME));
+  if (!fs.existsSync(abs)) { bad(`File not found: ${abs} — skipping.`); return; }
+  const head = fs.readFileSync(abs, 'utf8').slice(0, 4096);
+  if (!/Name.*Email|Active in Union|Mentor Bio/i.test(head)) {
+    if (!(await confirm('That file does not look like a CF mentor CSV (no recognizable headers). Save anyway?', false))) return;
+  }
+  cfg.mentorsCsv = abs; writeCfg(cfg);
+  const rows = csvToObjects(fs.readFileSync(abs, 'utf8'));
+  ok(`Saved (${rows.length} rows).`);
+}
+
 // ---------- launchd daily ----------
 const PLIST_LABEL = 'com.cfhelpers.daily';
 const PLIST_PATH = path.join(HOME, 'Library', 'LaunchAgents', PLIST_LABEL + '.plist');
@@ -385,6 +572,7 @@ async function connect(force) {
   await unionAuth();
   await slackAuth();
   await pitchAuth();
+  await setupMentors();
   await linkCf();
   console.log(C.b('\n── Final check ──'));
   await doctor();
@@ -403,6 +591,11 @@ function help() {
   ${C.b('cf daily')}                Build the report AND push it to your Slack target (no Claude).
   ${C.b('cf calendar')} [args...]    Pull the union.vc calendar as JSON (forwards to union_calendar.mjs).
   ${C.b('cf slack')} <t> <msg...>    Send a Slack DM (forwards to slack.mjs dm; add --dry-run first).
+  ${C.b('cf mentors')} <sub>          Master mentor CSV:
+                              ${C.b('show')}             — what's configured
+                              ${C.b('set')} <path>       — point at a CSV
+                              ${C.b('search')} [flags]   — score+filter (--tags X,Y --keywords k1,k2
+                                                  --not-hosting-this-week --limit N --json)
   ${C.b('cf install-daily')} [HH:MM]  Schedule \`cf daily\` via launchd (default 07:00, Mac).
   ${C.b('cf uninstall-daily')}      Remove the scheduled daily job.
   ${C.b('cf help')}                 This help.
@@ -424,6 +617,14 @@ try {
     case 'slack':
       if (!fs.existsSync(SLACK)) { bad('skills not installed — run `cf connect`'); process.exit(1); }
       process.exit(runInherit('node', [SLACK, 'dm', ...rest]) ? 0 : 1); break;
+    case 'mentors': {
+      const sub = rest[0];
+      if (sub === 'search') mentorsSearch(rest.slice(1));
+      else if (sub === 'set') mentorsSet(rest[1]);
+      else if (sub === 'show' || !sub) mentorsShow();
+      else { bad(`Unknown mentors subcommand: ${sub}`); process.exit(2); }
+      break;
+    }
     case 'install-daily': installDaily(rest.find((a) => /^\d/.test(a))); break;
     case 'uninstall-daily': uninstallDaily(); break;
     case 'help': case undefined: case '--help': case '-h': help(); break;

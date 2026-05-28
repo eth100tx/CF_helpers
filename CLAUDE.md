@@ -51,7 +51,13 @@ remind the user to **restart Claude Code** so the Pitch MCP tools load.
 - "schedule the daily report at 7am" → `cf install-daily 07:00`
 - **"match mentors to <CF company>"** → the **`cf-mentor-match`** skill triggers automatically;
   it reads the company from Pitch (researching the web if the Pitch profile is thin), scores
-  it against this week's open office-hours, and (on request) DMs the tiered picks to the
-  user's CF mentor coordinator on Slack (conventional nickname `eli`; each user maps it to
-  their own coordinator's DM via the slack-dm skill). Dry-run first, always.
+  it against this week's open office-hours, adds an *Off-hours mentor ideas* section drawn
+  from the master mentor CSV (`cf mentors search`), and (on request) DMs the tiered picks
+  to the user's CF mentor coordinator on Slack (conventional nickname `eli`). Dry-run first.
+- **"pitch roulette"** / *"5 random Pitch companies"* → **`cf-pitch-roulette`** picks 5
+  at random from Pitch and produces a compact per-company mentor brief; default DM target
+  is the user's self-DM (`me`).
+- **"research <name>"** → **`cf-augment`** does public-LinkedIn + website + WebSearch and
+  caches the brief at `~/.cf-helpers/augmentation/<slug>.md`. Auto-invoked by the other
+  skills whenever a Pitch profile or mentor record is thin.
 - Pitch work happens through the `mcp__pitch__*` tools once the server is loaded.

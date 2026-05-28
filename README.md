@@ -9,7 +9,9 @@ wires your machine up to:
 | **Capital Factory Slack** | Send DMs / channel posts; push the mentor report | CLI (saved browser session) |
 | **Pitch.vc** | Search companies, manage pipeline, people, tags, reviews… | Claude Code via the Pitch **MCP server** |
 | **Gmail** | Paste-ready HTML version of the report | Assumed already integrated (your normal Gmail) |
-| **Mentor matching** | Given a CF company, get a tiered list of mentor matches from this week's open office-hours, then DM it to Eli | Claude Code skill (`cf-mentor-match`) |
+| **Mentor matching** | Given a CF company, get a tiered list of mentor matches from this week's open office-hours **plus** off-hours intro-request candidates drawn from your master mentor CSV, then DM it to your coordinator | Claude Code skill (`cf-mentor-match`) |
+| **Pitch Roulette** | 5 random Pitch companies with a compact mentor pick for each — serendipitous discovery | Claude Code skill (`cf-pitch-roulette`) |
+| **Augmentation** | Public-LinkedIn + website + WebSearch research, cached locally; auto-invoked when a profile is thin | Claude Code skill (`cf-augment`) |
 
 Everything runs **locally** using sessions you sign into once — no Slack app install, no bot tokens,
 and **no passwords are ever written to disk** (only the resulting session cookies, which stay on your
@@ -55,7 +57,16 @@ cf calendar --weeks 4     # dump the union.vc calendar as JSON
 cf slack me "ping" --dry-run   # preview a Slack DM (then drop --dry-run to send)
 cf install-daily 07:00    # schedule `cf daily` every morning at 7:00 (macOS launchd)
 cf uninstall-daily        # remove that schedule
+
+cf mentors show           # what mentor CSV is configured + active count
+cf mentors set <path>     # point at your master mentor CSV
+cf mentors search --tags Defense,Hardware --not-hosting-this-week --limit 6
 ```
+
+Natural-language calls from Claude:
+- *"match mentors to TrailSense and push to my coordinator"* → `cf-mentor-match`
+- *"pitch roulette — 5 random"* → `cf-pitch-roulette`
+- *"research Dave Morris"* → `cf-augment`
 
 The **daily report runs without Claude** — `cf install-daily` registers a macOS launchd job that
 runs [`scripts/daily_report.sh`](scripts/daily_report.sh) → `cf daily` → generate + push to Slack.

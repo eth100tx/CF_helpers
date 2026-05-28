@@ -2,14 +2,15 @@
 name: cf-mentor-match
 description: >
   Given a Capital Factory company (a Pitch.vc slug / name / URL, or any company URL),
-  produce a tiered list of mentor-match recommendations from this week's open
-  Capital Factory office-hours slots and (on request) DM them to the user's CF mentor
-  coordinator on Slack (conventional nickname `eli`). Researches the company further
-  via its website / web search when the Pitch profile is thin. Use this skill whenever
-  the user asks to "match mentors to <X>", "find mentors for <X>", "who at CF can help
-  <X>", "mentor recs for <X>", or pastes a pitch.vc link / company URL together with
-  words like mentor/match/office hours. Pairs with the union-calendar, slack-dm, and
-  Pitch MCP integrations.
+  produce a tiered list of mentor-match recommendations from this week's open Capital
+  Factory office-hours slots PLUS an "Off-hours mentor ideas" section drawn from the
+  user's master mentor CSV (mentors who could help but aren't holding office hours this
+  week — intro-request candidates). Calls cf-augment when the Pitch profile or a
+  mentor's description is thin (public LinkedIn + website + web search). On request,
+  DMs the result to the user's CF mentor coordinator on Slack (conventional nickname
+  `eli`). Use this skill whenever the user asks to "match mentors to <X>", "find
+  mentors for <X>", "who at CF can help <X>", "mentor recs for <X>", or pastes a
+  pitch.vc link / company URL together with words like mentor/match/office hours.
 ---
 
 # CF Mentor Match
@@ -31,9 +32,19 @@ A bare pitch.vc URL plus the word *mentor* is enough.
   also have a name, look it up in Pitch in parallel.
 
 ## What you produce
-A Slack-mrkdwn message (see template below) with **Tier 1 / Tier 2 / Suggested plan**.
-Default destination is **DM to `eli`** via the slack-dm skill, but only after a dry-run
-that the user confirms.
+A Slack-mrkdwn message (see template below) with **Tier 1 / Tier 2 / Suggested plan /
+Off-hours mentor ideas**. Default destination is **DM to `eli`** via the slack-dm skill,
+but only after a dry-run that the user confirms.
+
+## Data sources
+- **Open office-hours sessions** (Tier 1 / Tier 2 / plan): the JSON output of
+  `mentor_report.mjs` — `~/.cf-helpers/reports/mentor-slots-YYYY-MM-DD.json`. Run
+  `cf report` if the latest isn't from today.
+- **Master mentor list** (Off-hours ideas): the user's CSV of all active CF mentors,
+  path stored in `~/.cf-helpers/config.json` as `mentorsCsv`. Query it via
+  `cf mentors search --tags "<…>" --keywords "<…>" --not-hosting-this-week --limit 8 --json`
+  — that handles parsing, scoring, and exclusion of mentors who are already in this
+  week's open sessions, returning only match-relevant fields (no PII).
 
 ---
 
@@ -53,10 +64,10 @@ The Pitch profile is **thin** when **any** of these are true:
 - `url` is missing
 - The tagline doesn't disambiguate what they actually *do* / *sell* / *to whom*
 
-When thin (or whenever the user pasted a non-Pitch URL):
-- `WebFetch(<company-url>, "What does <Name> do? Who do they sell to? What technology? Stage? Defense / regulated angle?")`
-- If still thin, `WebSearch("<Name> Capital Factory Austin <one-keyword-from-tagline>")` or similar.
-- Build a 2-3 sentence internal understanding before scoring.
+When thin (or whenever the user pasted a non-Pitch URL), invoke the **cf-augment** skill:
+pass the company name + url (if any), let it do public LinkedIn + website + WebSearch, and
+read the brief it writes to `~/.cf-helpers/augmentation/<slug>.md`. Use those
+*Match-relevant tags (suggested)* in your scoring below.
 
 ### 3. Pull the open mentor slots
 Prefer the structured JSON (no re-parsing of mrkdwn):
@@ -90,6 +101,25 @@ Bucket into:
 - **Tier 2 — strong adds (2-4 picks):** useful adjacencies
 - **Skip everyone else** silently (don't list them in the Slack output)
 
+### 4b. Off-hours mentor ideas (master list)
+After tiering the open sessions, query the master mentor CSV for **mentors who match but
+aren't holding office hours this week** — these become "intro request" candidates rather
+than "book a slot" candidates:
+
+```bash
+cf mentors search \
+  --tags "<Defense,Hardware,AI,…>" \
+  --keywords "<edge inference,RF,federal,…>" \
+  --not-hosting-this-week \
+  --limit 8 --json
+```
+
+The JSON gives you scored candidates with `name, title, current_company, city, union_link,
+linkedin, mentor_bio, session_description, industry, specialties, technologies, score,
+match_reasons`. Pick **3 (max 4)** with the strongest fit. If any candidate's CSV bio is
+sparse (e.g. bio + session description under ~120 chars combined), call **cf-augment**
+on them before deciding — the augmented brief often surfaces a clearer angle.
+
 ### 5. Build the Slack message (mrkdwn)
 Use this exact shape (replace placeholders, keep emoji + Book links intact):
 
@@ -109,7 +139,11 @@ _<1-line summary: what they do · 2-3 key tags · city · stage / raising-status
 • <Day h:MMam> — <Mentor> _(optional note)_
 • …  ← include any back-to-back / conflict notes here
 
-_Match logic = tag overlap between <Company>'s Pitch profile and each mentor's listed CF tags. Tier 1 is high-confidence; worth a 60s glance at each mentor's union.vc bio before booking._
+*:mag: Off-hours mentor ideas (no slot this week — intro request)*
+• *<Name>*, <Title> @ <Current Company> — _<one-line why · what they bring>_ · <linkedin-url|LinkedIn> · <union-link|Office hours page>
+• …
+
+_Match logic = tag/specialty overlap between <Company>'s Pitch profile and each mentor's listed CF tags (and master-list profile for off-hours). Tier 1 is high-confidence; the off-hours picks are intro-request candidates, not book-a-slot. 60s glance at each mentor's union.vc bio recommended before reaching out._
 ```
 
 **Formatting rules:**
@@ -150,8 +184,10 @@ If the user didn't ask to send it to Slack, just return the formatted block in c
 
 ## Tools used
 - `mcp__pitch__pitch_search_companies`, `mcp__pitch__pitch_get_company`
-- `WebFetch` (the company's own URL) and optionally `WebSearch` (when Pitch is thin)
+- **`cf-augment`** skill — for any thin company or mentor profile (writes
+  `~/.cf-helpers/augmentation/<slug>.md`)
 - `cf report` *or* `node ~/.claude/skills/union-calendar/scripts/mentor_report.mjs` (then read the JSON in `~/.cf-helpers/reports/`)
+- `cf mentors search --not-hosting-this-week --json` — the master mentor list (Off-hours section)
 - `cf slack eli --file <path> --dry-run` then without `--dry-run`
 
 ## Worked example
