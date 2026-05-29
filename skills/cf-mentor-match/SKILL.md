@@ -38,10 +38,10 @@ but only after a dry-run that the user confirms.
 
 ## Data sources
 - **Open office-hours sessions** (Tier 1 / Tier 2 / plan): the JSON output of
-  `mentor_report.mjs` — `~/.cf-helpers/reports/mentor-slots-YYYY-MM-DD.json`. Run
+  `mentor_report.mjs` — `$(cf report-dir)/mentor-slots-YYYY-MM-DD.json`. Run
   `cf report` if the latest isn't from today.
 - **Master mentor list** (Off-hours ideas): the user's CSV of all active CF mentors,
-  path stored in `~/.cf-helpers/config.json` as `mentorsCsv`. Query it via
+  path stored in the cf config as `mentorsCsv` (see `cf config`). Query it via
   `cf mentors search --tags "<…>" --keywords "<…>" --not-hosting-this-week --limit 8 --json`
   — that handles parsing, scoring, and exclusion of mentors who are already in this
   week's open sessions, returning only match-relevant fields (no PII).
@@ -51,11 +51,16 @@ but only after a dry-run that the user confirms.
 ## Pipeline
 
 ### 1. Resolve the company
+- **Memory first** — once you know the slug, run `cf knowledge path <slug> --type co`. If that
+  file exists and is fresh (`refreshedAt` within ~60 days), read it and use it as your profile
+  instead of re-pulling Pitch + re-augmenting.
 - If the input contains `pitch.vc/<slug>` (or `pitch.vc/c/<slug>`), pull the slug from the
   URL and call `mcp__pitch__pitch_get_company({ slug })` directly.
 - Otherwise call `mcp__pitch__pitch_search_companies({ query: <name-or-keywords>, limit: 5 })`
   and pick the top hit (verify slug + name make sense), then `pitch_get_company({ slug })`.
-- Capture: **name, tagline, tags (names), city, funding_stage, raising_funds, url, founded_year**.
+- Capture only: **name, tagline, description, tags (names), city, funding_stage, raising_funds,
+  url, founded_year**. Ignore the heavy cruft (`search_vector`, `field_provenance`, `embedding`,
+  `ats_*`).
 
 ### 2. Decide if you need more research
 The Pitch profile is **thin** when **any** of these are true:
@@ -66,16 +71,24 @@ The Pitch profile is **thin** when **any** of these are true:
 
 When thin (or whenever the user pasted a non-Pitch URL), invoke the **cf-augment** skill:
 pass the company name + url (if any), let it do public LinkedIn + website + WebSearch, and
-read the brief it writes to `~/.cf-helpers/augmentation/<slug>.md`. Use those
+read the brief it writes to `$(cf augment-dir)/<slug>.md`. Use those
 *Match-relevant tags (suggested)* in your scoring below.
+
+**Grow memory (lazy, on-touch):** if you didn't already have a fresh memory file for this
+company, invoke **cf-knowledge** to write/update `memory/companies/<slug>.md` now (it folds in
+the Pitch facts + cf-augment brief and preserves any human `## Notes`). Likewise, capture the
+Tier-1 mentors you ultimately recommend (`cf-knowledge … --type mentor`) when they're not
+already in memory — only the ones you surfaced, not the whole CSV. Resolve a host's CSV row
+with `cf mentors find "<name>" --json` (handles name-format differences) and keep **both** the
+live session tags and the CSV profile tags (they often differ).
 
 ### 3. Pull the open mentor slots
 Prefer the structured JSON (no re-parsing of mrkdwn):
 
 ```bash
 # Refresh and read the JSON
-node ~/.claude/skills/union-calendar/scripts/mentor_report.mjs --out-dir ~/.cf-helpers/reports >/dev/null 2>&1
-# Then read ~/.cf-helpers/reports/mentor-slots-YYYY-MM-DD.json
+cf report >/dev/null 2>&1   # writes to $(cf report-dir)
+# Then read $(cf report-dir)/mentor-slots-YYYY-MM-DD.json
 ```
 
 Or just run `cf report` (same outcome). Each session in the JSON has `host`, `start`, `end`,
@@ -185,8 +198,8 @@ If the user didn't ask to send it to Slack, just return the formatted block in c
 ## Tools used
 - `mcp__pitch__pitch_search_companies`, `mcp__pitch__pitch_get_company`
 - **`cf-augment`** skill — for any thin company or mentor profile (writes
-  `~/.cf-helpers/augmentation/<slug>.md`)
-- `cf report` *or* `node ~/.claude/skills/union-calendar/scripts/mentor_report.mjs` (then read the JSON in `~/.cf-helpers/reports/`)
+  `$(cf augment-dir)/<slug>.md`)
+- `cf report` (then read the JSON in `$(cf report-dir)/`)
 - `cf mentors search --not-hosting-this-week --json` — the master mentor list (Off-hours section)
 - `cf slack eli --file <path> --dry-run` then without `--dry-run`
 

@@ -16,7 +16,8 @@
 // Session cookies + localStorage live in ~/.slack-cf-auth.json (NO password is ever written to disk).
 // Nicknames live in ~/.slack-cf-nicknames.json; workspace config in ~/.slack-cf-config.json.
 
-import { chromium } from 'playwright';
+// playwright is imported lazily inside auth()/browserSend() only — the default DM path and
+// auth-test use Slack's HTTP API via native fetch, so they need NO playwright/chromium installed.
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -60,6 +61,7 @@ function resolve(target) {
 // ---------- auth ----------
 async function auth() {
   const cfg = config();
+  const { chromium } = await import('playwright'); // lazy: only the browser sign-in needs it
   const browser = await chromium.launch({ headless: false }); // always headed: the user signs in here
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
@@ -154,6 +156,7 @@ async function apiPost(channel, text) {
 
 // Fallback send by driving the web client in a browser (slower; collapses newlines).
 async function browserSend(who, message, headed) {
+  const { chromium } = await import('playwright'); // lazy: only the browser fallback needs it
   const browser = await chromium.launch({ headless: !headed });
   const ctx = await browser.newContext({ storageState: AUTH_FILE, viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();

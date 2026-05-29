@@ -33,3 +33,7 @@ next_session.md
 *.log
 .DS_Store
 .npm-mcp-cache/
+
+# private npm cache used to dodge EACCES on a mixed-ownership ~/.npm
+.npmcache/
+**/.npmcache/
