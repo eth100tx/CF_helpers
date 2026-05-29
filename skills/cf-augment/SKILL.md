@@ -3,7 +3,7 @@ name: cf-augment
 description: >
   Augment a sparse profile of a Capital Factory mentor or a Pitch.vc company by pulling
   public LinkedIn, the company / personal website, and web search snippets, then writing
-  a compact local research brief to ~/.cf-helpers/augmentation/<slug>.md. Use this skill
+  a compact local research brief to the augmentation cache ($(cf augment-dir)/<slug>.md). Use this skill
   whenever the user says "research <name>", "augment <name>", "look up <name>", "find
   more on <X>", or whenever another CF skill (cf-mentor-match, cf-pitch-roulette) needs
   more context because the Pitch profile or mentor record is thin. Stays local — never
@@ -13,8 +13,8 @@ description: >
 # CF Augment
 
 Take a name (a mentor, a company, or both) plus any URLs you've already got, gather public
-signals (LinkedIn, website, web search), and write a short markdown brief under
-`~/.cf-helpers/augmentation/`. Designed to feed the other CF skills when the primary
+signals (LinkedIn, website, web search), and write a short markdown brief under the augmentation
+cache (`cf augment-dir` — project-local when run inside a `cf init` workspace, else `~/.cf-helpers`). Designed to feed the other CF skills when the primary
 source (Pitch profile, mentor CSV row) is too thin to score well.
 
 ## When to trigger
@@ -36,7 +36,7 @@ source (Pitch profile, mentor CSV row) is too thin to score well.
 
 ### 1. Slug + cache check
 - `slug = name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')`
-- If `~/.cf-helpers/augmentation/<slug>.md` exists and `refreshedAt` is within ~60 days,
+- If `$(cf augment-dir)/<slug>.md` exists and `refreshedAt` is within ~60 days,
   **reuse it** — read and return it, don't re-fetch.
 
 ### 2. Gather (public only)
@@ -90,8 +90,8 @@ sources:
 ```
 
 ### 4. Save + log
-- Write to `~/.cf-helpers/augmentation/<slug>.md` (overwrite if older).
-- Append one line to `~/.cf-helpers/augmentation.log`:
+- Write to `$(cf augment-dir)/<slug>.md` (overwrite if older).
+- Append one line to `$(cf home)/augmentation.log`:
   `<ISO>\t<slug>\tlinkedin=<status>\twebsite=<status>\twebsearch=<yes|no>\tsuggested_tags=<n>`
 - Return: the file path and the brief content to whatever called you.
 
@@ -102,7 +102,7 @@ sources:
 - **PII restraint.** Do not record anyone's email, phone, demographic categories (race,
   gender, sexuality, military affiliation), or anything they didn't put on their public
   profile. Stick to professional / matching-relevant facts.
-- **Never commit.** `~/.cf-helpers/` is git-ignored. Don't move or copy augmentation files
+- **Never commit.** The augmentation cache + `.cf-helpers/` are git-ignored. Don't move or copy augmentation files
   into the repo.
 - **Stale-OK.** A 60-day-old brief is fine for routine matching. Force a refresh only
   if the caller explicitly asks ("refresh <name>", "re-research <name>").
@@ -110,11 +110,11 @@ sources:
 ## Tools used
 - `WebFetch` (public LinkedIn URL, company/personal site)
 - `WebSearch`
-- Standard file write to `~/.cf-helpers/augmentation/<slug>.md`
+- Standard file write to `$(cf augment-dir)/<slug>.md`
 
 ## LinkedIn outcome tracking
 We expect public LinkedIn fetches to be hit-or-miss (most return a login-walled stub).
-The append-only `~/.cf-helpers/augmentation.log` lets us see, over time, whether public
+The append-only `$(cf home)/augmentation.log` lets us see, over time, whether public
 LinkedIn is yielding enough to be worth the call or if we should build a saved-session
 `linkedin-auth` skill (like `slack-auth` / `union-calendar`'s sign-in flow). Treat that
 log as the evidence base for that decision.

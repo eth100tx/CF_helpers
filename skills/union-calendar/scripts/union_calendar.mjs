@@ -15,7 +15,9 @@
 // Auth is stored as browser cookies in ~/.union-vc-auth.json (no password is ever written to disk).
 // The community slug detected at login is stored in ~/.union-vc-config.json.
 
-import { chromium, request } from 'playwright';
+// NOTE: playwright is imported lazily inside login() only. The `pull` path uses native fetch +
+// the saved session cookies, so calendar pulls / the mentor report need NO playwright/chromium
+// installed — only the one-time browser `login` does.
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -24,6 +26,17 @@ const HOME = os.homedir();
 const AUTH_FILE = path.join(HOME, '.union-vc-auth.json');
 const CONFIG_FILE = path.join(HOME, '.union-vc-config.json');
 const BASE = 'https://union.vc';
+
+// Build a Cookie header for `urlBase` from a Playwright storageState file (what login() saves).
+function cookieHeaderFor(urlBase) {
+  const state = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
+  const host = new URL(urlBase).hostname;
+  const matches = (state.cookies || []).filter((c) => {
+    const d = (c.domain || '').replace(/^\./, '');
+    return d && (host === d || host.endsWith('.' + d));
+  });
+  return matches.map((c) => `${c.name}=${c.value}`).join('; ');
+}
 
 function readConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; }
@@ -53,6 +66,7 @@ async function login() {
   const password = process.env.UNION_PASSWORD || '';
   const headless = !!(email && password); // headless auto-fill when creds provided, else headed manual
 
+  const { chromium } = await import('playwright'); // lazy: only login needs a browser
   const browser = await chromium.launch({ headless });
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
@@ -129,31 +143,28 @@ async function pull(opts) {
   const anchor = opts.date ? new Date(opts.date + 'T12:00:00') : new Date();
   const weeks = Number.isFinite(opts.weeks) && opts.weeks > 0 ? opts.weeks : 2;
 
-  const ctx = await request.newContext({ storageState: AUTH_FILE, baseURL: BASE });
+  const cookie = cookieHeaderFor(BASE);
+  if (!cookie) throw new Error(`No union.vc cookies in ${AUTH_FILE} — run: node union_calendar.mjs login`);
   const result = { generatedAt: new Date().toISOString(), network, weeks: [] };
 
-  try {
-    for (let i = 0; i < weeks; i++) {
-      const d = new Date(anchor.getTime() + i * 7 * 86400000);
-      const date = fmtDate(d);
-      const res = await ctx.get(`/${network}/programming.json?date=${date}`, {
-        headers: { Accept: 'application/json' },
-      });
-      const ctype = res.headers()['content-type'] || '';
-      if (!res.ok() || !ctype.includes('json')) {
-        throw new Error(
-          `Calendar fetch failed (status ${res.status()}, type "${ctype}"). ` +
-          `Session may have expired — run: node union_calendar.mjs login`
-        );
-      }
-      const items = await res.json();
-      const events = opts.raw ? items : items.map(normalize);
-      const byDay = {};
-      for (const e of (opts.raw ? items.map(normalize) : events)) byDay[e.day] = (byDay[e.day] || 0) + 1;
-      result.weeks.push({ index: i, anchorDate: date, count: items.length, byDay, events });
+  for (let i = 0; i < weeks; i++) {
+    const d = new Date(anchor.getTime() + i * 7 * 86400000);
+    const date = fmtDate(d);
+    const res = await fetch(`${BASE}/${network}/programming.json?date=${date}`, {
+      headers: { Accept: 'application/json', Cookie: cookie },
+    });
+    const ctype = res.headers.get('content-type') || '';
+    if (!res.ok || !ctype.includes('json')) {
+      throw new Error(
+        `Calendar fetch failed (status ${res.status}, type "${ctype}"). ` +
+        `Session may have expired — run: node union_calendar.mjs login`
+      );
     }
-  } finally {
-    await ctx.dispose();
+    const items = await res.json();
+    const events = opts.raw ? items : items.map(normalize);
+    const byDay = {};
+    for (const e of (opts.raw ? items.map(normalize) : events)) byDay[e.day] = (byDay[e.day] || 0) + 1;
+    result.weeks.push({ index: i, anchorDate: date, count: items.length, byDay, events });
   }
 
   const json = JSON.stringify(result, null, 2);

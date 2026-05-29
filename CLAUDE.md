@@ -15,6 +15,16 @@ It is idempotent and safe to re-run. It will: install the skills into `~/.claude
 Playwright, open browser windows for the union.vc and Slack sign-ins, ask for the Pitch API key,
 register the Pitch MCP server, and test everything. Walk the user through it and report the result.
 
+## Project-local vs global
+`cf` state (config, reports, augmentation) lives in **CF_HOME**, resolved as: `$CF_HOME` →
+nearest ancestor with `.cf-helpers/config.json` → `~/.cf-helpers`. To set a project up as a
+self-contained workspace (its own `memory/`, `data/`, reports), run **`cf init`** in that dir;
+every `cf`/skill call from inside it then uses that workspace. Run elsewhere → global, unchanged.
+
+**Secrets live in `$HOME`, not the project** — the Pitch key is in `~/.claude.json`; union/Slack
+sessions in `~/.{union-vc,slack-cf}-auth.json`. A hand-off can't "copy keys from the old project
+dir": the new machine re-runs the sign-ins and pastes its own Pitch key.
+
 ## Rules of engagement
 - **Never type the user's passwords or complete SSO for them.** The browser windows that open during
   `cf connect` are for *the user* to sign in. Tell them to complete the login; the script detects
@@ -33,7 +43,9 @@ register the Pitch MCP server, and test everything. Walk the user through it and
 2. `node bin/cf` is the entrypoint; the skills live in `skills/` and are installed to
    `~/.claude/skills/` so Claude Code can discover them.
 3. Install deps: `npm install` in `~/.claude/skills/union-calendar/scripts` and
-   `~/.claude/skills/slack-dm/scripts`, then `npx playwright install chromium`.
+   `~/.claude/skills/slack-dm/scripts`, then `npx playwright install chromium`. (Playwright is
+   only needed for the browser sign-ins — `cf report`/`cf daily`/`cf calendar` and Slack API
+   sends run with no browser, so an already-authed machine can skip the Chromium download.)
 4. union.vc: `node ~/.claude/skills/union-calendar/scripts/union_calendar.mjs login` → user signs in.
    Test: `… union_calendar.mjs pull --weeks 1`.
 5. Slack: `node ~/.claude/skills/slack-dm/scripts/slack.mjs auth` → user signs in.
@@ -46,6 +58,7 @@ Finish with `node bin/cf doctor` and report the status of each integration. Afte
 remind the user to **restart Claude Code** so the Pitch MCP tools load.
 
 ## After setup, what the user can do
+- "set up a project workspace here" → `cf init` (project-local memory/reports)
 - "build the mentor report" → `cf report`
 - "push the mentor report to Slack" → `cf daily` (or `cf slack me --file …` after a dry-run)
 - "schedule the daily report at 7am" → `cf install-daily 07:00`

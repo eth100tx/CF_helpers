@@ -24,7 +24,9 @@ like 3 / 10 are accepted overrides on "5".
 ## Procedure
 
 ### 1. Build the candidate pool
-- Call `mcp__pitch__pitch_list_companies({ limit: 100 })` (or higher if available — page if needed).
+- Page the pool in **small chunks** — a single `limit:100` call overflows the tool-result cap.
+  Call `pitch_list_companies({ limit: 25, offset: 0 })`, then `offset: 25, 50, 75` until you
+  have enough. Keep only `{slug, name}` from each row.
 - This is your pool. **Do not** filter by city/stage/raising unless the user asks — the
   whole point is serendipity.
 
@@ -37,17 +39,35 @@ like 3 / 10 are accepted overrides on "5".
 ### 3. Build a profile + pick mentors for each
 For **each** of the 5 picks:
 
-1. **Profile-check** — `mcp__pitch__pitch_get_company({ slug })`. Note tagline, tags, city,
-   stage, raising-status, url.
-2. **If the profile is thin** (sparse tagline / few tags), invoke **cf-augment** with the
+1. **Memory first** — check local memory before fetching: run
+   `cf knowledge path <slug> --type co`. If that file exists and is fresh (`refreshedAt`
+   within ~60 days), **read it and use it** — skip the Pitch/web fetch below.
+2. **Profile-check** *(only if no fresh memory file)* — `mcp__pitch__pitch_get_company({ slug })`.
+   Keep only the lean fields: `name, tagline, description, company_tags[].tag.name, city,
+   funding_stage, raising_funds, website`. Ignore the heavy cruft (`search_vector`,
+   `field_provenance`, `embedding`, `ats_*`, supabase storage URLs).
+3. **If the profile is thin** (sparse tagline / few tags), invoke **cf-augment** with the
    company name + url. (Read the augmentation file it writes; don't re-fetch.)
-3. **Match against open mentor sessions**: `cf report` → read the latest
-   `~/.cf-helpers/reports/mentor-slots-*.json`. Apply the same scoring as **cf-mentor-match**
-   (tag overlap, tagline-keyword × mentor-tags, stage-relevance). Pick **at most 2** Tier 1
-   mentors per company — this is a roulette, not a full report.
-4. **Off-hours add** *(optional, pick at most 1)* — call `cf mentors search --tags <…>
+4. **Grow memory (lazy, on-touch)** — if there was no fresh memory file for this company,
+   now that you've profiled it, invoke **cf-knowledge** to write/update
+   `memory/companies/<slug>.md` (it folds in the Pitch facts + any cf-augment brief and
+   preserves any human `## Notes`). This is the point of roulette: **every run leaves the
+   local memory richer.**
+5. **Match against open mentor sessions**: read the latest
+   `$(cf report-dir)/mentor-slots-*.json` (run `cf report` first if it's stale/missing).
+   Apply the same scoring as **cf-mentor-match** (tag overlap, tagline-keyword x mentor-tags,
+   stage-relevance). Pick **at most 2** Tier 1 mentors per company — this is a roulette, not
+   a full report.
+6. **Off-hours add** *(optional, pick at most 1)* — call `cf mentors search --tags <…>
    --not-hosting-this-week --limit 5 --json` against the master mentor CSV and pick at most
    **one** off-hours mentor per company. Skip silently if no strong fit.
+7. **Grow mentor memory** — for each mentor you actually *pick* that you don't already have a
+   fresh `memory/mentors/<slug>.md` for, invoke **cf-knowledge** (`--type mentor`). Resolve the
+   union.vc host name to their CSV row with `cf mentors find "<host name>" --json` (handles
+   formatting like "Rudy Mirran" ↔ "Rudolf (Rudy) Mirran"; store the CSV name as an `aka:`).
+   Record **both** the live session tags (this week's topic) and the CSV profile tags — they
+   often differ and both are useful. Only the mentors you surfaced — stay lazy, don't pre-build
+   the whole CSV.
 
 ### 4. Compose the Slack message
 Use this shape — **one combined message**, 5 sections:
@@ -94,7 +114,7 @@ ideas._`
 
 ## Tools used
 - `mcp__pitch__pitch_list_companies`, `mcp__pitch__pitch_get_company`
-- `cf report` / mentor-slots-*.json
+- `cf report` / `$(cf report-dir)/mentor-slots-*.json`
 - `cf mentors search --json` (for off-hours master-list picks)
-- **`cf-augment`** (when a Pitch profile is thin)
+- **`cf-knowledge`** (grow `memory/` on-touch) · **`cf-augment`** (when a Pitch profile is thin)
 - `cf slack me --file <tmp> --dry-run` then without `--dry-run`

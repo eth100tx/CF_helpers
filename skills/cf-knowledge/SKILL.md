@@ -23,7 +23,7 @@ This skill is the **curator**. The low-level web research worker is **`cf-augmen
 
 ## Layout
 The user picks where the store lives via `cf knowledge set <path>` (it's recorded in
-`~/.cf-helpers/config.json` as `knowledgeDir` — could be inside an Obsidian vault, an iCloud
+the cf config as `knowledgeDir` (see `cf config`) — project-local after `cf init`, or e.g. an Obsidian vault / iCloud
 folder, a normal directory, anywhere). Files land under:
 
 ```
@@ -87,7 +87,7 @@ matters for CF matching.
 ## Procedure
 
 ### 0. Verify config
-- Read `~/.cf-helpers/config.json` for `knowledgeDir`. If missing, tell the user:
+- Get `knowledgeDir` from `cf config` (or `cf knowledge show`). If unset, tell the user:
   > "First, pick where the knowledge base should live: `cf knowledge set <path>` (any directory
   > you want — e.g. an Obsidian vault). Then re-run me."
 - Use `cf knowledge show` to confirm path + counts; use `cf knowledge path <slug> --type <co|mentor>`
@@ -107,10 +107,13 @@ matters for CF matching.
    - If missing → fetch fresh.
 4. **Fetch fresh data** (whichever apply):
    - Companies: `pitch_get_company({ slug })` (or `pitch_search_companies` → top hit → get).
-   - Mentors: `cf mentors search --keywords "<name>" --limit 3 --json` to find them in the
+   - Mentors: resolve the name to a CSV row with `cf mentors find "<name>" --json` (robust to
+     formatting like "Rudy Mirran" ↔ "Rudolf (Rudy) Mirran"; falls back to `cf mentors search`).
+     Keep the CSV name as an `aka:` and record both profile tags and (if applicable) live session
+     tags. Older note: `cf mentors search --keywords "<name>"` only matches bio/title, not Name, in the
      master CSV; pick the right row.
    - Both: invoke `cf-augment` with the name + any URLs you have. Read its brief at
-     `~/.cf-helpers/augmentation/<slug>.md` (cf-augment writes it).
+     `$(cf augment-dir)/<slug>.md` (cf-augment writes it).
 5. **Write the canonical file** at `<knowledgeDir>/<type>/<slug>.md`:
    - Build the frontmatter (`refreshedAt = now`, `sources.*` set to ISO or `not_found`).
    - Render Summary, the structured Snapshot section, and the trimmed Augmentation section.
@@ -135,7 +138,7 @@ lookups (with progress notes), but never proactively.
 ## Rules
 - **Notes section is sacred.** A refresh that wipes a user's notes is a regression bug. Read the
   existing file before overwriting; verbatim-preserve `## Notes` onward.
-- **Local only.** `<knowledgeDir>/` and `~/.cf-helpers/` are never committed. Do not move,
+- **Local only.** `<knowledgeDir>/` and `.cf-helpers/` are never committed. Do not move,
   copy, or upload these files anywhere. If the user picked a synced directory (iCloud, Dropbox,
   an Obsidian vault), that's their choice — but never embed them in CF_helpers commits.
 - **No PII excess.** Skip personal demographics from the mentor CSV (email, race, gender,

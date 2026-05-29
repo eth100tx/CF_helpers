@@ -51,6 +51,7 @@ When it finishes, **you're connected and can work.**
 ## Everyday commands
 
 ```bash
+cf init [dir]             # scaffold a project-local workspace (memory/, data/, .cf-helpers/)
 cf doctor                 # re-test all integrations (read-only, no sign-in)
 cf report                 # build the mentor office-hours report → ~/.cf-helpers/reports/
 cf daily                  # build the report AND push it to your Slack target (no Claude needed)
@@ -61,6 +62,7 @@ cf uninstall-daily        # remove that schedule
 
 cf mentors show           # what mentor CSV is configured + active count
 cf mentors set <path>     # point at your master mentor CSV
+cf mentors find <name>    # resolve a union.vc host name to their CSV row (robust to formatting)
 cf mentors search --tags Defense,Hardware --not-hosting-this-week --limit 6
 
 cf knowledge show         # local knowledge dir + entry counts
@@ -94,6 +96,17 @@ None of these are part of this repo, and `.gitignore` is set up so they can neve
 
 ---
 
+## Project-local workspaces (`cf init`)
+
+By default everything lives under `~/` (global). Run **`cf init`** inside a project directory to
+make that folder self-contained instead: it creates `memory/` (durable per-entity notes),
+`data/` (your mentor CSV), and `.cf-helpers/` (config, reports, augmentation). After that, any
+`cf` command **or skill** run from inside the folder uses *that* workspace; run anywhere else and
+the tools fall back to the global config unchanged. Resolution order for `CF_HOME`:
+`$CF_HOME` → nearest ancestor with `.cf-helpers/config.json` → `~/.cf-helpers`.
+
+This is what makes a hand-off portable: clone the repo, `cf init`, drop in the CSV, sign in once.
+
 ## Docs
 
 - [`docs/SETUP.md`](docs/SETUP.md) — manual setup, prerequisites, troubleshooting
@@ -107,7 +120,8 @@ None of these are part of this repo, and `.gitignore` is set up so they can neve
 ## Requirements
 
 - macOS or Linux (the launchd scheduler is macOS-only; everything else is cross-platform)
-- **Node.js 18+** and npm
+- **Node.js 18+** and npm. (Playwright/Chromium is only needed for the one-time browser
+  sign-ins; the daily report and Slack sends run over HTTP with no browser.)
 - A Capital Factory account for union.vc + Slack; a Pitch.vc account for the Pitch MCP
 
 ## Privacy & scope

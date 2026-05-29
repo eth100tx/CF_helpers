@@ -4,7 +4,7 @@
 //   cf connect            One-time interactive setup: install skills, sign in to union.vc + Slack,
 //                         register the Pitch MCP server, then test everything. Run this first.
 //   cf doctor             Re-test all auth (union.vc, Slack, Pitch) without signing in. Read-only.
-//   cf report             Generate the mentor office-hours report into ~/.cf-helpers/reports/.
+//   cf report             Generate the mentor office-hours report into <CF_HOME>/reports/.
 //   cf daily              Generate the report AND push it to your daily Slack target (no Claude).
 //   cf calendar [...]      Pull the union.vc calendar as JSON (passes args to union_calendar.mjs).
 //   cf slack <t> <msg...>  Send a Slack DM (passes args to slack.mjs dm; add --dry-run to preview).
@@ -15,7 +15,8 @@
 //   cf help               Show this help.
 //
 // No npm dependencies — Node built-ins only. The skills it drives DO need Playwright, installed
-// by `cf connect` into ~/.claude/skills/<skill>/scripts.
+// by `cf connect`. Day-to-day report/Slack run with NO playwright; only the one-time
+// browser sign-in (`union login` / `slack auth`) needs it.
 
 import os from 'node:os';
 import fs from 'node:fs';
@@ -36,7 +37,25 @@ const UNION = path.join(UNION_SCRIPTS, 'union_calendar.mjs');
 const MENTOR = path.join(UNION_SCRIPTS, 'mentor_report.mjs');
 const SLACK = path.join(SLACK_SCRIPTS, 'slack.mjs');
 
-const CF_HOME = path.join(HOME, '.cf-helpers');
+// CF_HOME holds config.json + reports/ + augmentation/. Resolution order:
+//   1. $CF_HOME                                              (explicit override)
+//   2. nearest ancestor of CWD with `.cf-helpers/config.json` (a project workspace — see `cf init`)
+//   3. ~/.cf-helpers                                         (the global default)
+// This lets a project directory own its own memory/reports/augmentation while leaving global use
+// (run from anywhere else) completely unchanged.
+function findProjectHome(start) {
+  let dir = path.resolve(start);
+  for (;;) {
+    const cand = path.join(dir, '.cf-helpers');
+    if (fs.existsSync(path.join(cand, 'config.json'))) return cand;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+const CF_HOME = process.env.CF_HOME
+  ? path.resolve(process.env.CF_HOME)
+  : (findProjectHome(process.cwd()) || path.join(HOME, '.cf-helpers'));
 const REPORT_DIR = path.join(CF_HOME, 'reports');
 const AUGMENT_DIR = path.join(CF_HOME, 'augmentation');
 const CF_CONFIG = path.join(CF_HOME, 'config.json');
@@ -116,11 +135,14 @@ function installDeps(force) {
     if (fs.existsSync(nm) && !force) { warn(`deps present in ${path.relative(HOME, dir)} — skipping npm install`); }
     else {
       console.log(C.dim(`  npm install in ${path.relative(HOME, dir)} …`));
-      if (!runInherit('npm', ['install', '--no-audit', '--no-fund'], { cwd: dir })) { bad(`npm install failed in ${dir}`); return false; }
+      // Use a private npm cache to sidestep EACCES from a mixed-ownership ~/.npm (same trick the
+      // Pitch MCP server uses). Without this, `npm install` fails on machines with a broken cache.
+      const npmEnv = { ...process.env, NPM_CONFIG_CACHE: NPM_MCP_CACHE };
+      if (!runInherit('npm', ['install', '--no-audit', '--no-fund'], { cwd: dir, env: npmEnv })) { bad(`npm install failed in ${dir}`); return false; }
     }
   }
   console.log(C.dim('  installing the Chromium browser for Playwright …'));
-  if (!runInherit('npx', ['--yes', 'playwright', 'install', 'chromium'], { cwd: SLACK_SCRIPTS })) {
+  if (!runInherit('npx', ['--yes', 'playwright', 'install', 'chromium'], { cwd: SLACK_SCRIPTS, env: { ...process.env, NPM_CONFIG_CACHE: NPM_MCP_CACHE } })) {
     warn('playwright browser install reported a problem — auth steps may fail until it succeeds');
   } else ok('Playwright + Chromium ready');
   return true;
@@ -297,6 +319,14 @@ async function doctor() {
     else warn(`configured but could not auto-verify (${h.reason})`);
   }
 
+  process.stdout.write('cf PATH  … ');
+  const cfOnPath = runCap('bash', ['-lc', 'command -v cf']).out.trim();
+  if (cfOnPath) ok(`on PATH (${cfOnPath})`);
+  else { warn('`cf` is NOT on PATH — the knowledge/mentor-match/roulette skills call bare `cf` and will fail. Run `cf connect` (links it) or add it yourself.'); }
+
+  process.stdout.write('workspace… ');
+  ok(`CF_HOME → ${CF_HOME}${CF_HOME === path.join(HOME, '.cf-helpers') ? C.dim(' (global)') : C.dim(' (project-local)')}`);
+
   console.log(C.dim('\nGmail: assumed already integrated (the report writes an HTML file you paste into Gmail).'));
   console.log(allGood ? C.g('\nAll required integrations are working. You\'re ready to work.') : C.y('\nSome integrations need attention — see above.'));
   return allGood;
@@ -434,6 +464,37 @@ function mentorsSet(p) {
   const cfg = readCfg(); cfg.mentorsCsv = abs; writeCfg(cfg);
   ok(`Mentors CSV path saved: ${abs}`);
   mentorsShow();
+}
+// Normalize a display name for matching: drop parentheticals ("Rudolf (Rudy) Mirran" → "rudolf
+// mirran"), strip punctuation, lowercase, collapse spaces. Bridges union.vc host names ↔ CSV names.
+function normName(s) {
+  return String(s || '').toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+// Resolve a (possibly differently-formatted) name to master-CSV rows. Used by the skills to turn a
+// union.vc office-hours host into their CSV profile reliably, instead of brittle substring matching.
+function mentorsFind(args) {
+  const asJson = args.includes('--json');
+  const name = args.filter((a) => !a.startsWith('--')).join(' ');
+  if (!name) { bad('Usage: cf mentors find <name> [--json]'); process.exit(2); }
+  const mentors = loadMentors();
+  if (!mentors) { bad('No mentors CSV configured. Run `cf connect` or `cf mentors set <path>`.'); process.exit(1); }
+  const q = normName(name); const qp = q.split(' '); const qLast = qp[qp.length - 1]; const qFirst = qp[0] || '';
+  const scored = [];
+  for (const m of mentors) {
+    const nm = normName(m['Name']); if (!nm) continue;
+    const p = nm.split(' '); const last = p[p.length - 1]; const first = p[0] || '';
+    let score = 0;
+    if (nm === q) score = 100;
+    else if (last === qLast && first[0] === qFirst[0]) score = 80;
+    else if (nm.includes(q) || q.includes(nm)) score = 60;
+    else if (last === qLast) score = 40;
+    if (score > 0) scored.push(publicMentor(m, { score, active: isActive(m), csv_name: m['Name'] }));
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const top = scored.slice(0, 5);
+  if (asJson) { process.stdout.write(JSON.stringify(top, null, 2) + '\n'); return; }
+  if (!top.length) { console.log('(no match)'); return; }
+  for (const m of top) console.log(`${String(m.score).padStart(3)}  ${m.csv_name} — ${m.title || '—'} @ ${m.current_company || '—'} (${m.city || '—'})${m.active ? '' : '  [inactive]'}`);
 }
 function mentorsSearch(args) {
   const mentors = loadMentors();
@@ -635,6 +696,34 @@ async function setupKnowledge() {
   ok(`Saved: ${abs}`);
 }
 
+// ---------- project workspace ----------
+// `cf init [dir]` scaffolds a self-contained workspace so memory/reports/augmentation live in the
+// project (not ~/.cf-helpers). After init, any cf/skill run from inside `dir` uses this workspace.
+function cmdInit(args) {
+  const root = path.resolve(args.find((a) => !a.startsWith('--')) || process.cwd());
+  const home = path.join(root, '.cf-helpers');
+  const mem = path.join(root, 'memory');
+  const data = path.join(root, 'data');
+  fs.mkdirSync(path.join(home, 'reports'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'augmentation'), { recursive: true });
+  fs.mkdirSync(path.join(mem, 'companies'), { recursive: true });
+  fs.mkdirSync(path.join(mem, 'mentors'), { recursive: true });
+  fs.mkdirSync(data, { recursive: true });
+  const cfgPath = path.join(home, 'config.json');
+  // Write directly to the new home (CF_HOME for THIS process was resolved before the home existed).
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch {}
+  cfg.knowledgeDir = cfg.knowledgeDir || mem;
+  cfg.tz = cfg.tz || 'America/Chicago';
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  ok(`Initialized CF workspace at ${root}`);
+  console.log(`  home:    ${home}  ${C.dim('(config.json, reports/, augmentation/)')}`);
+  console.log(`  memory:  ${mem}  ${C.dim('(companies/, mentors/) — the durable local memory')}`);
+  console.log(`  data:    ${data}  ${C.dim('(drop your mentor CSV here, then: cf mentors set <file>)')}`);
+  console.log(C.dim('  Any `cf` or skill run from inside this dir now uses THIS workspace, not the global one.'));
+}
+function cmdConfigDump() { process.stdout.write(JSON.stringify({ home: CF_HOME, ...readCfg() }, null, 2) + '\n'); }
+
 // ---------- launchd daily ----------
 const PLIST_LABEL = 'com.cfhelpers.daily';
 const PLIST_PATH = path.join(HOME, 'Library', 'LaunchAgents', PLIST_LABEL + '.plist');
@@ -705,14 +794,19 @@ function help() {
 
   ${C.b('cf connect')}              One-time setup: install skills, sign in (union.vc + Slack),
                           set up Pitch MCP, and test everything. ${C.dim('Run this first.')}
+  ${C.b('cf init')} [dir]            Scaffold a project-local workspace (memory/, data/, .cf-helpers/)
+                          so memory + reports live in the project, not ~/.cf-helpers.
+  ${C.b('cf home')} / ${C.b('config')}        Print the resolved CF_HOME / merged config (debug).
+  ${C.b('cf report-dir')} / ${C.b('augment-dir')}   Print (and create) the reports / augmentation dir.
   ${C.b('cf doctor')}               Re-test all integrations (read-only, no sign-in).
-  ${C.b('cf report')}               Build the mentor office-hours report into ~/.cf-helpers/reports/.
+  ${C.b('cf report')}               Build the mentor office-hours report into <CF_HOME>/reports/.
   ${C.b('cf daily')}                Build the report AND push it to your Slack target (no Claude).
   ${C.b('cf calendar')} [args...]    Pull the union.vc calendar as JSON (forwards to union_calendar.mjs).
   ${C.b('cf slack')} <t> <msg...>    Send a Slack DM (forwards to slack.mjs dm; add --dry-run first).
   ${C.b('cf mentors')} <sub>          Master mentor CSV:
                               ${C.b('show')}             — what's configured
                               ${C.b('set')} <path>       — point at a CSV
+                              ${C.b('find')} <name>      — resolve a (union.vc) name to CSV row(s) (--json)
                               ${C.b('search')} [flags]   — score+filter (--tags X,Y --keywords k1,k2
                                                   --not-hosting-this-week --limit N --json)
   ${C.b('cf knowledge')} <sub>        Local CF knowledge base:
@@ -733,6 +827,11 @@ const force = rest.includes('--force');
 try {
   switch (cmd) {
     case 'connect': await connect(force); break;
+    case 'init': cmdInit(rest); break;
+    case 'home': console.log(CF_HOME); break;
+    case 'config': cmdConfigDump(); break;
+    case 'report-dir': fs.mkdirSync(REPORT_DIR, { recursive: true }); console.log(REPORT_DIR); break;
+    case 'augment-dir': fs.mkdirSync(AUGMENT_DIR, { recursive: true }); console.log(AUGMENT_DIR); break;
     case 'doctor': process.exit((await doctor()) ? 0 : 1); break;
     case 'report': await cmdReport(); break;
     case 'daily': await cmdDaily(); break;
@@ -745,6 +844,7 @@ try {
     case 'mentors': {
       const sub = rest[0];
       if (sub === 'search') mentorsSearch(rest.slice(1));
+      else if (sub === 'find') mentorsFind(rest.slice(1));
       else if (sub === 'set') mentorsSet(rest[1]);
       else if (sub === 'show' || !sub) mentorsShow();
       else { bad(`Unknown mentors subcommand: ${sub}`); process.exit(2); }
